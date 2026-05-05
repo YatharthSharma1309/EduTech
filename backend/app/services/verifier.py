@@ -102,7 +102,7 @@ def _llm_equivalent(text_a: str, text_b: str) -> bool:
                 "messages": [{"role": "user", "content": prompt}],
                 "stream": False,
             },
-            timeout=30.0,
+            timeout=120.0,
         )
         resp.raise_for_status()
         answer = resp.json()["message"]["content"].strip().lower()

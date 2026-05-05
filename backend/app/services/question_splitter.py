@@ -59,24 +59,68 @@ Rules:
 """
 
 
+_CHUNK_SIZE = 6000   # chars per LLM call — keeps responses fast and within context
+_TIMEOUT = 300.0     # 5 min per call; large models on CPU can be slow
+
+
 def split_questions_with_llm(pdf_text: str) -> list[ParsedQuestion]:
-    """Send PDF text to Ollama and parse the returned JSON."""
+    """
+    Split pdf_text into chunks and call Ollama on each.
+    Merges results, de-duplicating by question_number.
+    """
+    chunks = _chunk_text(pdf_text, _CHUNK_SIZE)
+    all_results: dict[int, ParsedQuestion] = {}
+
+    for chunk in chunks:
+        items = _call_ollama(chunk)
+        for item in items:
+            # later chunks (answer key) can fill in missing answers
+            q_num = item.question_number
+            if q_num not in all_results:
+                all_results[q_num] = item
+            elif item.answer and not all_results[q_num].answer:
+                all_results[q_num].answer = item.answer
+
+    return sorted(all_results.values(), key=lambda q: q.question_number)
+
+
+def _chunk_text(text: str, size: int) -> list[str]:
+    """Split text into overlapping chunks on page boundaries where possible."""
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + size
+        # try to break at a page boundary so questions aren't split mid-way
+        if end < len(text):
+            boundary = text.rfind("--- Page", start, end)
+            if boundary > start:
+                end = boundary
+        chunks.append(text[start:end])
+        start = end
+    return chunks
+
+
+def _call_ollama(chunk: str) -> list[ParsedQuestion]:
     payload = {
         "model": settings.ollama_text_model,
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": pdf_text[:12000]},  # stay within context
+            {"role": "user", "content": chunk},
         ],
         "stream": False,
         "format": "json",
     }
 
-    resp = httpx.post(
-        f"{settings.ollama_base_url}/api/chat",
-        json=payload,
-        timeout=120.0,
-    )
-    resp.raise_for_status()
+    try:
+        resp = httpx.post(
+            f"{settings.ollama_base_url}/api/chat",
+            json=payload,
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.TimeoutException:
+        print("[question_splitter] Ollama timeout on chunk — skipping", flush=True)
+        return []
 
     raw = resp.json()["message"]["content"]
     data = _safe_parse_json(raw)
@@ -95,8 +139,6 @@ def split_questions_with_llm(pdf_text: str) -> list[ParsedQuestion]:
             ))
         except (TypeError, ValueError):
             continue
-
-    results.sort(key=lambda q: q.question_number)
     return results
 
 
