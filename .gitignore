@@ -22,6 +22,8 @@ Thumbs.db
 .tmp.drivedownload/
 desktop.ini
 
-# PDF uploads (keep sample)
+# PDF uploads
 *.pdf
-!CFPQ_Maths10\ (1).pdf
+
+# Ollama local model weights
+ollama/
