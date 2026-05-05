@@ -16,11 +16,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Only persist upload dir (PDFs deleted post-processing) and output dir (Excel files)
 os.makedirs(settings.pdf_upload_dir, exist_ok=True)
-os.makedirs(settings.image_dir, exist_ok=True)
 os.makedirs(settings.output_dir, exist_ok=True)
 
-app.mount("/images", StaticFiles(directory=settings.image_dir), name="images")
+# Serve completed Excel files for download
 app.mount("/outputs", StaticFiles(directory=settings.output_dir), name="outputs")
 
 app.include_router(router, prefix="/api")

@@ -9,8 +9,14 @@ Stages:
   5. LaTeX → Unicode on all text fields
   6. Verify (fuzzy + LLM) → build ExcelRows
   7. Write Excel file
+
+Temp files (page PNGs, question crops, figures) are written to a system
+temp directory and deleted automatically when the pipeline finishes or fails.
+Only the output Excel and the uploaded PDF are kept.
 """
 
+import shutil
+import tempfile
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -20,7 +26,7 @@ from pathlib import Path
 import fitz
 
 from app.config import settings
-from app.services.excel_builder import ExcelRow, build_excel
+from app.services.excel_builder import build_excel
 from app.services.figure_extractor import extract_figures, match_figures_to_questions
 from app.services.latex_converter import latex_to_unicode
 from app.services.pdf_renderer import crop_question_images, render_pdf_pages
@@ -43,7 +49,6 @@ class JobStatus:
     finished_at: str = ""
 
 
-# In-memory job store (sufficient for single-server dev use)
 _jobs: dict[str, JobStatus] = {}
 
 
@@ -74,18 +79,27 @@ def _update(job_id: str, **kwargs) -> None:
 
 
 def _run(pdf_path: str, job_id: str) -> None:
+    # Create a dedicated temp dir for all intermediate files
+    work_dir = tempfile.mkdtemp(prefix=f"edutech_{job_id[:8]}_")
     try:
         _update(job_id, status="running", current_step="Starting")
-        _execute(pdf_path, job_id)
+        _execute(pdf_path, job_id, work_dir)
     except Exception as exc:
         _update(job_id, status="failed", error=str(exc), finished_at=datetime.utcnow().isoformat())
-        raise
+    finally:
+        # Clean up temp working dir (page PNGs, crops, figures)
+        shutil.rmtree(work_dir, ignore_errors=True)
+        print(f"[pipeline] Cleaned up temp dir: {work_dir}", flush=True)
+        # Clean up uploaded PDF — no longer needed once Excel is written
+        try:
+            Path(pdf_path).unlink(missing_ok=True)
+            print(f"[pipeline] Deleted uploaded PDF: {pdf_path}", flush=True)
+        except Exception:
+            pass
 
 
-def _execute(pdf_path: str, job_id: str) -> None:
+def _execute(pdf_path: str, job_id: str, work_dir: str) -> None:
     pdf_name = Path(pdf_path).stem
-    work_dir = Path(settings.image_dir) / job_id
-    work_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Stage 1: Text extraction + LLM Q/A split ──────────────────────────────
     _update(job_id, current_step="Stage 1: Extracting text and splitting Q/A", progress=0.05)
@@ -93,22 +107,23 @@ def _execute(pdf_path: str, job_id: str) -> None:
     llm_questions = split_questions_with_llm(pdf_text)
     _update(job_id, total_questions=len(llm_questions), progress=0.20)
 
-    # ── Stage 2: Render pages + crop question images ───────────────────────────
+    # ── Stage 2: Render pages + crop question images (temp) ───────────────────
     _update(job_id, current_step="Stage 2: Rendering PDF pages to PNG")
-    page_images = render_pdf_pages(pdf_path, str(work_dir / "pages"), dpi=settings.render_dpi)
+    render_pdf_pages(pdf_path, str(Path(work_dir) / "pages"), dpi=settings.render_dpi)
     question_crops = crop_question_images(pdf_path, str(work_dir), dpi=settings.render_dpi)
     _update(job_id, progress=0.35)
 
-    # ── Stage 3: Figure extraction + matching ─────────────────────────────────
+    # ── Stage 3: Figure extraction + matching (temp) ──────────────────────────
     _update(job_id, current_step="Stage 3: Extracting and matching figures")
     figures = extract_figures(pdf_path, str(work_dir))
 
-    # Build page height map for matching
     doc = fitz.open(pdf_path)
     page_heights = {i + 1: doc[i].rect.height for i in range(len(doc))}
     doc.close()
 
     figures = match_figures_to_questions(figures, question_crops, page_heights)
+
+    # Figure paths still point to temp dir — excel_builder embeds them before cleanup
     figure_map: dict[int, str] = {
         f.matched_question: f.file_path
         for f in figures
@@ -150,9 +165,12 @@ def _execute(pdf_path: str, job_id: str) -> None:
     _update(job_id, current_step="Stage 6: Verifying extraction", progress=0.80)
     rows = verify_and_build_rows(vision_results, llm_questions, figure_map)
 
-    # ── Stage 7: Write Excel ───────────────────────────────────────────────────
+    # ── Stage 7: Write Excel (permanent output) ────────────────────────────────
+    # Excel is written before temp cleanup — openpyxl embeds figure images
+    # directly into the .xlsx so the temp paths are no longer needed after this.
     _update(job_id, current_step="Stage 7: Writing Excel file", progress=0.90)
     out_path = str(Path(settings.output_dir) / f"{pdf_name}_{job_id[:8]}.xlsx")
+    Path(settings.output_dir).mkdir(parents=True, exist_ok=True)
     build_excel(rows, out_path)
 
     _update(

@@ -7,7 +7,6 @@ class Settings(BaseSettings):
     ollama_vision_model: str = "qwen2.5vl:7b"
 
     pdf_upload_dir: str = "uploads/pdfs"
-    image_dir: str = "uploads/images"
     output_dir: str = "outputs"
 
     render_dpi: int = 150  # PDF page render resolution

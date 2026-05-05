@@ -31,6 +31,7 @@ def extract(file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, buf)
 
     job_id = create_job()
+    # pdf_path is passed to pipeline; pipeline deletes it after processing
     start_pipeline(str(pdf_path), job_id)
 
     return {
