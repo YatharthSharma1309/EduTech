@@ -3,14 +3,14 @@
 import { useRef, useState } from "react";
 import { downloadUrl, JobStatus, pollJob, uploadPdf } from "@/lib/api";
 
-const STAGES = [
-  { label: "Split Q / A",      keyword: "Stage 1" },
-  { label: "Render pages",     keyword: "Stage 2" },
-  { label: "Match figures",    keyword: "Stage 3" },
-  { label: "Vision OCR",       keyword: "Stage 4" },
-  { label: "LaTeX → Unicode",  keyword: "Stage 5" },
-  { label: "Verify",           keyword: "Stage 6" },
-  { label: "Write Excel",      keyword: "Stage 7" },
+const STAGES: { label: string; keyword: string; tokenKey?: string }[] = [
+  { label: "Split Q / A",      keyword: "Stage 1", tokenKey: "Split Q/A"   },
+  { label: "Render pages",     keyword: "Stage 2"                           },
+  { label: "Match figures",    keyword: "Stage 3"                           },
+  { label: "Vision OCR",       keyword: "Stage 4", tokenKey: "Vision OCR"  },
+  { label: "LaTeX → Unicode",  keyword: "Stage 5"                          },
+  { label: "Verify",           keyword: "Stage 6", tokenKey: "Verify"      },
+  { label: "Write Excel",      keyword: "Stage 7"                          },
 ];
 
 function currentStageIndex(step: string): number {
@@ -126,12 +126,12 @@ export default function UploadPanel() {
               const done    = stageIdx > i || isDone;
               const active  = stageIdx === i;
               const pending = stageIdx < i;
+              const stageTokens = stage.tokenKey ? (job.tokens?.[stage.tokenKey] ?? 0) : 0;
 
               return (
                 <div key={stage.label} className={`flex items-center gap-3 px-2 py-1.5 rounded-lg text-sm transition-colors ${active ? "bg-blue-50" : ""}`}>
                   {/* Icon */}
-                  <span className="w-5 h-5 flex-shrink-0 flex items-center justify-center rounded-full text-xs font-bold
-                    ${done ? 'bg-green-500 text-white' : active ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-400'}">
+                  <span className={`w-5 h-5 flex-shrink-0 flex items-center justify-center rounded-full text-xs font-bold ${done ? "bg-green-500 text-white" : active ? "bg-blue-500 text-white" : "bg-gray-100 text-gray-400"}`}>
                     {done ? (
                       <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none">
                         <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
@@ -148,6 +148,14 @@ export default function UploadPanel() {
                     {stage.label}
                   </span>
 
+                  {/* Token count (only for LLM stages, only when tokens > 0) */}
+                  {done && stageTokens > 0 && (
+                    <span className="text-xs text-purple-500 font-mono">{stageTokens.toLocaleString()} tok</span>
+                  )}
+                  {active && stageTokens > 0 && (
+                    <span className="text-xs text-purple-400 font-mono">{stageTokens.toLocaleString()} tok</span>
+                  )}
+
                   {/* Status badge */}
                   {done && <span className="text-xs text-green-500">done</span>}
                   {active && (
@@ -160,6 +168,14 @@ export default function UploadPanel() {
                 </div>
               );
             })}
+
+            {/* Total tokens row */}
+            {job.total_tokens > 0 && (
+              <div className="mt-2 pt-2 border-t border-gray-100 flex justify-between items-center px-2">
+                <span className="text-xs text-gray-400">Total tokens used</span>
+                <span className="text-xs font-semibold text-purple-600 font-mono">{job.total_tokens.toLocaleString()}</span>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -189,6 +205,11 @@ export default function UploadPanel() {
               <p className="text-xs text-green-600 mt-0.5">
                 {job!.total_questions} questions · Excel ready
               </p>
+              {job!.total_tokens > 0 && (
+                <p className="text-xs text-purple-500 mt-0.5 font-mono">
+                  {job!.total_tokens.toLocaleString()} tokens used
+                </p>
+              )}
             </div>
             <a
               href={downloadUrl(job!.job_id)}

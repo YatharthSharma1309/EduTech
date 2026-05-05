@@ -26,13 +26,14 @@ def verify_and_build_rows(
     vision_results: list[VisionResult],
     llm_questions: list[ParsedQuestion],
     figure_map: dict[int, str],      # question_number → figure_path or ""
-) -> list[ExcelRow]:
+) -> tuple[list[ExcelRow], int]:     # (rows, verify_tokens_used)
     """
     Merge vision results with LLM-parsed questions.
     Returns one ExcelRow per question, with error flags set.
     """
     llm_by_num = {q.question_number: q for q in llm_questions}
     rows: list[ExcelRow] = []
+    total_tokens = 0
 
     for vr in vision_results:
         llm_q = llm_by_num.get(vr.question_number)
@@ -48,7 +49,9 @@ def verify_and_build_rows(
             if sim < FUZZY_THRESHOLD:
                 text_error = f"Low match ({sim:.0f}%): vision vs text extraction differ"
             elif sim < LLM_THRESHOLD:
-                if not _llm_equivalent(vr.question_text, llm_q.question_text):
+                equivalent, verify_tokens = _llm_equivalent(vr.question_text, llm_q.question_text)
+                total_tokens += verify_tokens
+                if not equivalent:
                     text_error = f"Semantic mismatch ({sim:.0f}% fuzzy)"
 
             # ── Answer comparison ─────────────────────────────────────────────
@@ -85,11 +88,12 @@ def verify_and_build_rows(
             ))
 
     rows.sort(key=lambda r: r.question_number)
-    return rows
+    return rows, total_tokens
 
 
-def _llm_equivalent(text_a: str, text_b: str) -> bool:
-    """Ask Ollama whether two question texts are semantically the same."""
+def _llm_equivalent(text_a: str, text_b: str) -> tuple[bool, int]:
+    """Ask Ollama whether two question texts are semantically the same.
+    Returns (is_equivalent, tokens_used)."""
     prompt = (
         f"Are these two exam question texts semantically equivalent? "
         f"Reply with only 'yes' or 'no'.\n\nText A: {text_a[:400]}\n\nText B: {text_b[:400]}"
@@ -105,7 +109,9 @@ def _llm_equivalent(text_a: str, text_b: str) -> bool:
             timeout=120.0,
         )
         resp.raise_for_status()
-        answer = resp.json()["message"]["content"].strip().lower()
-        return answer.startswith("yes")
+        body = resp.json()
+        tokens = body.get("prompt_eval_count", 0) + body.get("eval_count", 0)
+        answer = body["message"]["content"].strip().lower()
+        return answer.startswith("yes"), tokens
     except Exception:
-        return True  # assume equivalent on error to avoid false flags
+        return True, 0  # assume equivalent on error to avoid false flags

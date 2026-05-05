@@ -11,6 +11,8 @@ export interface JobStatus {
   error: string;
   created_at: string;
   finished_at: string;
+  tokens: Record<string, number>;  // stage label → token count
+  total_tokens: number;
 }
 
 export async function uploadPdf(file: File): Promise<{ job_id: string }> {

@@ -63,25 +63,26 @@ _CHUNK_SIZE = 6000   # chars per LLM call — keeps responses fast and within co
 _TIMEOUT = 300.0     # 5 min per call; large models on CPU can be slow
 
 
-def split_questions_with_llm(pdf_text: str) -> list[ParsedQuestion]:
+def split_questions_with_llm(pdf_text: str) -> tuple[list[ParsedQuestion], int]:
     """
     Split pdf_text into chunks and call Ollama on each.
-    Merges results, de-duplicating by question_number.
+    Returns (questions, total_tokens_used).
     """
     chunks = _chunk_text(pdf_text, _CHUNK_SIZE)
     all_results: dict[int, ParsedQuestion] = {}
+    total_tokens = 0
 
     for chunk in chunks:
-        items = _call_ollama(chunk)
+        items, tokens = _call_ollama(chunk)
+        total_tokens += tokens
         for item in items:
-            # later chunks (answer key) can fill in missing answers
             q_num = item.question_number
             if q_num not in all_results:
                 all_results[q_num] = item
             elif item.answer and not all_results[q_num].answer:
                 all_results[q_num].answer = item.answer
 
-    return sorted(all_results.values(), key=lambda q: q.question_number)
+    return sorted(all_results.values(), key=lambda q: q.question_number), total_tokens
 
 
 def _chunk_text(text: str, size: int) -> list[str]:
@@ -100,7 +101,8 @@ def _chunk_text(text: str, size: int) -> list[str]:
     return chunks
 
 
-def _call_ollama(chunk: str) -> list[ParsedQuestion]:
+def _call_ollama(chunk: str) -> tuple[list[ParsedQuestion], int]:
+    """Returns (questions, tokens_used)."""
     payload = {
         "model": settings.ollama_text_model,
         "messages": [
@@ -120,9 +122,11 @@ def _call_ollama(chunk: str) -> list[ParsedQuestion]:
         resp.raise_for_status()
     except httpx.TimeoutException:
         print("[question_splitter] Ollama timeout on chunk — skipping", flush=True)
-        return []
+        return [], 0
 
-    raw = resp.json()["message"]["content"]
+    body = resp.json()
+    tokens = body.get("prompt_eval_count", 0) + body.get("eval_count", 0)
+    raw = body["message"]["content"]
     data = _safe_parse_json(raw)
 
     results: list[ParsedQuestion] = []
@@ -139,7 +143,7 @@ def _call_ollama(chunk: str) -> list[ParsedQuestion]:
             ))
         except (TypeError, ValueError):
             continue
-    return results
+    return results, tokens
 
 
 def _safe_parse_json(raw: str) -> list[dict]:

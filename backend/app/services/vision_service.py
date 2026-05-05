@@ -24,6 +24,7 @@ class VisionResult:
     c3: str
     c4: str
     raw_text: str          # full vision model output before parsing
+    tokens_used: int = 0
     error: str = ""        # non-empty if vision call failed
 
 
@@ -73,7 +74,9 @@ def extract_question_from_image(
             timeout=300.0,
         )
         resp.raise_for_status()
-        raw = resp.json()["message"]["content"]
+        body = resp.json()
+        tokens = body.get("prompt_eval_count", 0) + body.get("eval_count", 0)
+        raw = body["message"]["content"]
         parsed = _parse_vision_json(raw)
 
         return VisionResult(
@@ -84,6 +87,7 @@ def extract_question_from_image(
             c3=parsed.get("c3", "").strip(),
             c4=parsed.get("c4", "").strip(),
             raw_text=raw,
+            tokens_used=tokens,
         )
 
     except Exception as exc:
@@ -92,6 +96,7 @@ def extract_question_from_image(
             question_text="",
             c1="", c2="", c3="", c4="",
             raw_text="",
+            tokens_used=0,
             error=str(exc),
         )
 

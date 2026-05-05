@@ -12,7 +12,7 @@ Stages:
 
 Temp files (page PNGs, question crops, figures) are written to a system
 temp directory and deleted automatically when the pipeline finishes or fails.
-Only the output Excel and the uploaded PDF are kept.
+Only the output Excel is kept.
 """
 
 import shutil
@@ -47,6 +47,9 @@ class JobStatus:
     error: str = ""
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     finished_at: str = ""
+    # Token usage per stage (stage label → token count)
+    tokens: dict = field(default_factory=dict)
+    total_tokens: int = 0
 
 
 _jobs: dict[str, JobStatus] = {}
@@ -78,8 +81,14 @@ def _update(job_id: str, **kwargs) -> None:
             setattr(job, k, v)
 
 
+def _add_tokens(job_id: str, stage: str, count: int) -> None:
+    job = _jobs.get(job_id)
+    if job and count:
+        job.tokens[stage] = job.tokens.get(stage, 0) + count
+        job.total_tokens += count
+
+
 def _run(pdf_path: str, job_id: str) -> None:
-    # Create a dedicated temp dir for all intermediate files
     work_dir = tempfile.mkdtemp(prefix=f"edutech_{job_id[:8]}_")
     try:
         _update(job_id, status="running", current_step="Starting")
@@ -87,10 +96,8 @@ def _run(pdf_path: str, job_id: str) -> None:
     except Exception as exc:
         _update(job_id, status="failed", error=str(exc), finished_at=datetime.utcnow().isoformat())
     finally:
-        # Clean up temp working dir (page PNGs, crops, figures)
         shutil.rmtree(work_dir, ignore_errors=True)
         print(f"[pipeline] Cleaned up temp dir: {work_dir}", flush=True)
-        # Clean up uploaded PDF — no longer needed once Excel is written
         try:
             Path(pdf_path).unlink(missing_ok=True)
             print(f"[pipeline] Deleted uploaded PDF: {pdf_path}", flush=True)
@@ -104,7 +111,8 @@ def _execute(pdf_path: str, job_id: str, work_dir: str) -> None:
     # ── Stage 1: Text extraction + LLM Q/A split ──────────────────────────────
     _update(job_id, current_step="Stage 1: Extracting text and splitting Q/A", progress=0.05)
     pdf_text = extract_pdf_text(pdf_path)
-    llm_questions = split_questions_with_llm(pdf_text)
+    llm_questions, s1_tokens = split_questions_with_llm(pdf_text)
+    _add_tokens(job_id, "Split Q/A", s1_tokens)
     _update(job_id, total_questions=len(llm_questions), progress=0.20)
 
     # ── Stage 2: Render pages + crop question images (temp) ───────────────────
@@ -122,8 +130,6 @@ def _execute(pdf_path: str, job_id: str, work_dir: str) -> None:
     doc.close()
 
     figures = match_figures_to_questions(figures, question_crops, page_heights)
-
-    # Figure paths still point to temp dir — excel_builder embeds them before cleanup
     figure_map: dict[int, str] = {
         f.matched_question: f.file_path
         for f in figures
@@ -135,10 +141,13 @@ def _execute(pdf_path: str, job_id: str, work_dir: str) -> None:
     _update(job_id, current_step="Stage 4: Vision OCR on question crops")
     vision_results = []
     total = len(question_crops)
+    s4_tokens = 0
 
     for i, crop in enumerate(question_crops, start=1):
         vr = extract_question_from_image(crop.file_path, crop.question_number)
         vision_results.append(vr)
+        s4_tokens += vr.tokens_used
+        _add_tokens(job_id, "Vision OCR", vr.tokens_used)
         _update(
             job_id,
             questions_done=i,
@@ -146,7 +155,7 @@ def _execute(pdf_path: str, job_id: str, work_dir: str) -> None:
             current_step=f"Stage 4: OCR question {i}/{total}",
         )
 
-    # ── Stage 5: LaTeX → Unicode ───────────────────────────────────────────────
+    # ── Stage 5: LaTeX → Unicode (no LLM, no tokens) ─────────────────────────
     _update(job_id, current_step="Stage 5: Converting LaTeX to Unicode", progress=0.75)
     for vr in vision_results:
         vr.question_text = latex_to_unicode(vr.question_text)
@@ -163,11 +172,10 @@ def _execute(pdf_path: str, job_id: str, work_dir: str) -> None:
 
     # ── Stage 6: Verify + build rows ──────────────────────────────────────────
     _update(job_id, current_step="Stage 6: Verifying extraction", progress=0.80)
-    rows = verify_and_build_rows(vision_results, llm_questions, figure_map)
+    rows, s6_tokens = verify_and_build_rows(vision_results, llm_questions, figure_map)
+    _add_tokens(job_id, "Verify", s6_tokens)
 
-    # ── Stage 7: Write Excel (permanent output) ────────────────────────────────
-    # Excel is written before temp cleanup — openpyxl embeds figure images
-    # directly into the .xlsx so the temp paths are no longer needed after this.
+    # ── Stage 7: Write Excel ───────────────────────────────────────────────────
     _update(job_id, current_step="Stage 7: Writing Excel file", progress=0.90)
     out_path = str(Path(settings.output_dir) / f"{pdf_name}_{job_id[:8]}.xlsx")
     Path(settings.output_dir).mkdir(parents=True, exist_ok=True)
