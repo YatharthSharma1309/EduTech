@@ -19,6 +19,7 @@ import shutil
 import tempfile
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -137,23 +138,30 @@ def _execute(pdf_path: str, job_id: str, work_dir: str) -> None:
     }
     _update(job_id, progress=0.45)
 
-    # ── Stage 4: Vision OCR per question crop ─────────────────────────────────
+    # ── Stage 4: Vision OCR per question crop (parallel) ─────────────────────
     _update(job_id, current_step="Stage 4: Vision OCR on question crops")
     vision_results = []
     total = len(question_crops)
-    s4_tokens = 0
+    done_count = 0
 
-    for i, crop in enumerate(question_crops, start=1):
-        vr = extract_question_from_image(crop.file_path, crop.question_number)
-        vision_results.append(vr)
-        s4_tokens += vr.tokens_used
-        _add_tokens(job_id, "Vision OCR", vr.tokens_used)
-        _update(
-            job_id,
-            questions_done=i,
-            progress=round(0.45 + (i / max(total, 1)) * 0.30, 3),
-            current_step=f"Stage 4: OCR question {i}/{total}",
-        )
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        future_to_crop = {
+            executor.submit(extract_question_from_image, crop.file_path, crop.question_number): crop
+            for crop in question_crops
+        }
+        for future in as_completed(future_to_crop):
+            vr = future.result()
+            vision_results.append(vr)
+            _add_tokens(job_id, "Vision OCR", vr.tokens_used)
+            done_count += 1
+            _update(
+                job_id,
+                questions_done=done_count,
+                progress=round(0.45 + (done_count / max(total, 1)) * 0.30, 3),
+                current_step=f"Stage 4: OCR question {done_count}/{total}",
+            )
+
+    vision_results.sort(key=lambda vr: vr.question_number)
 
     # ── Stage 5: LaTeX → Unicode (no LLM, no tokens) ─────────────────────────
     _update(job_id, current_step="Stage 5: Converting LaTeX to Unicode", progress=0.75)

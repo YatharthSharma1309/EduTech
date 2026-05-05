@@ -19,7 +19,7 @@ from app.services.question_splitter import ParsedQuestion
 from app.services.vision_service import VisionResult
 
 FUZZY_THRESHOLD = 70    # below this → definite text error
-LLM_THRESHOLD = 85      # above this → trusted without LLM
+LLM_THRESHOLD = 70      # match threshold — skip LLM verify, fuzzy only
 
 
 def verify_and_build_rows(
@@ -42,6 +42,14 @@ def verify_and_build_rows(
 
         if vr.error:
             text_error = f"Vision failed: {vr.error}"
+
+        # If vision failed entirely, promote LLM data as primary so the row isn't blank
+        if vr.error and llm_q:
+            vr.question_text = vr.question_text or llm_q.question_text
+            vr.c1 = vr.c1 or llm_q.c1
+            vr.c2 = vr.c2 or llm_q.c2
+            vr.c3 = vr.c3 or llm_q.c3
+            vr.c4 = vr.c4 or llm_q.c4
 
         if llm_q:
             # ── Question text comparison ──────────────────────────────────────

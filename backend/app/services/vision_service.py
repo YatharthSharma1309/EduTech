@@ -65,13 +65,14 @@ def extract_question_from_image(
         ],
         "stream": False,
         "format": "json",
+        "options": {"num_predict": 300},
     }
 
     try:
         resp = httpx.post(
             f"{settings.ollama_base_url}/api/chat",
             json=payload,
-            timeout=300.0,
+            timeout=600.0,
         )
         resp.raise_for_status()
         body = resp.json()

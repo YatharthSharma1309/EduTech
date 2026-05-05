@@ -6,7 +6,7 @@
 |------|---------|-------|
 | Python | 3.11+ | |
 | Node.js | 18+ | |
-| Ollama | latest | https://ollama.com |
+| Ollama | 0.23.0 | https://ollama.com |
 
 ---
 
@@ -29,20 +29,20 @@ ollama serve
 ```powershell
 cd backend
 
-# Activate the virtual environment (already created)
-EduTech\Scripts\Activate.ps1          # Windows PowerShell
-# source EduTech/bin/activate         # Mac/Linux
+# Create and activate virtual environment
+python -m venv venv
+.\venv\Scripts\Activate.ps1          # Windows PowerShell
+# source venv/bin/activate           # Mac/Linux
 
-# If setting up fresh, create venv and install
-python -m venv EduTech
-EduTech\Scripts\pip install -r requirements.txt
+# Install dependencies
+pip install -r requirements.txt
 
 # Configure environment
 copy .env.example .env               # Windows
 # cp .env.example .env               # Mac/Linux
 
 # Start the API server
-EduTech\Scripts\uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8000
 ```
 
 API available at: http://localhost:8000
@@ -92,7 +92,7 @@ EduTech/
 ├── README.md
 │
 ├── backend/
-│   ├── EduTech/                  ← Python virtual environment
+│   ├── venv/                         ← Python virtual environment (git-ignored)
 │   ├── app/
 │   │   ├── main.py               ← FastAPI app entry point
 │   │   ├── config.py             ← Settings (Ollama URLs, dirs, DPI)

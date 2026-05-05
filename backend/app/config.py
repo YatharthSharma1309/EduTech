@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     pdf_upload_dir: str = "uploads/pdfs"
     output_dir: str = "outputs"
 
-    render_dpi: int = 150  # PDF page render resolution
+    render_dpi: int = 100  # PDF page render resolution
 
     class Config:
         env_file = ".env"
