@@ -17,6 +17,11 @@ frontend/.env.local
 .DS_Store
 Thumbs.db
 
+# Google Drive
+.tmp.driveupload/
+.tmp.drivedownload/
+desktop.ini
+
 # PDF uploads (keep sample)
 *.pdf
 !CFPQ_Maths10\ (1).pdf
