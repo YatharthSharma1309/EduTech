@@ -1,0 +1,22 @@
+# Python
+backend/EduTech/
+backend/__pycache__/
+backend/app/__pycache__/
+backend/app/**/__pycache__/
+backend/*.pyc
+backend/.env
+backend/uploads/
+backend/outputs/
+
+# Node
+frontend/node_modules/
+frontend/.next/
+frontend/.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# PDF uploads (keep sample)
+*.pdf
+!CFPQ_Maths10\ (1).pdf

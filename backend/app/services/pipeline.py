@@ -1,0 +1,165 @@
+"""
+Main extraction pipeline orchestrator.
+
+Stages:
+  1. Extract text → LLM splits Q/A
+  2. Render PDF pages → PNG, crop per question
+  3. Extract & match figures
+  4. Vision OCR per question crop
+  5. LaTeX → Unicode on all text fields
+  6. Verify (fuzzy + LLM) → build ExcelRows
+  7. Write Excel file
+"""
+
+import threading
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+
+import fitz
+
+from app.config import settings
+from app.services.excel_builder import ExcelRow, build_excel
+from app.services.figure_extractor import extract_figures, match_figures_to_questions
+from app.services.latex_converter import latex_to_unicode
+from app.services.pdf_renderer import crop_question_images, render_pdf_pages
+from app.services.question_splitter import extract_pdf_text, split_questions_with_llm
+from app.services.verifier import verify_and_build_rows
+from app.services.vision_service import extract_question_from_image
+
+
+@dataclass
+class JobStatus:
+    job_id: str
+    status: str = "pending"       # pending | running | done | failed
+    progress: float = 0.0         # 0.0 – 1.0
+    current_step: str = "Queued"
+    total_questions: int = 0
+    questions_done: int = 0
+    output_path: str = ""
+    error: str = ""
+    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    finished_at: str = ""
+
+
+# In-memory job store (sufficient for single-server dev use)
+_jobs: dict[str, JobStatus] = {}
+
+
+def create_job() -> str:
+    job_id = str(uuid.uuid4())
+    _jobs[job_id] = JobStatus(job_id=job_id)
+    return job_id
+
+
+def get_job(job_id: str) -> JobStatus | None:
+    return _jobs.get(job_id)
+
+
+def start_pipeline(pdf_path: str, job_id: str) -> None:
+    thread = threading.Thread(
+        target=_run,
+        args=(pdf_path, job_id),
+        daemon=True,
+    )
+    thread.start()
+
+
+def _update(job_id: str, **kwargs) -> None:
+    job = _jobs.get(job_id)
+    if job:
+        for k, v in kwargs.items():
+            setattr(job, k, v)
+
+
+def _run(pdf_path: str, job_id: str) -> None:
+    try:
+        _update(job_id, status="running", current_step="Starting")
+        _execute(pdf_path, job_id)
+    except Exception as exc:
+        _update(job_id, status="failed", error=str(exc), finished_at=datetime.utcnow().isoformat())
+        raise
+
+
+def _execute(pdf_path: str, job_id: str) -> None:
+    pdf_name = Path(pdf_path).stem
+    work_dir = Path(settings.image_dir) / job_id
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Stage 1: Text extraction + LLM Q/A split ──────────────────────────────
+    _update(job_id, current_step="Stage 1: Extracting text and splitting Q/A", progress=0.05)
+    pdf_text = extract_pdf_text(pdf_path)
+    llm_questions = split_questions_with_llm(pdf_text)
+    _update(job_id, total_questions=len(llm_questions), progress=0.20)
+
+    # ── Stage 2: Render pages + crop question images ───────────────────────────
+    _update(job_id, current_step="Stage 2: Rendering PDF pages to PNG")
+    page_images = render_pdf_pages(pdf_path, str(work_dir / "pages"), dpi=settings.render_dpi)
+    question_crops = crop_question_images(pdf_path, str(work_dir), dpi=settings.render_dpi)
+    _update(job_id, progress=0.35)
+
+    # ── Stage 3: Figure extraction + matching ─────────────────────────────────
+    _update(job_id, current_step="Stage 3: Extracting and matching figures")
+    figures = extract_figures(pdf_path, str(work_dir))
+
+    # Build page height map for matching
+    doc = fitz.open(pdf_path)
+    page_heights = {i + 1: doc[i].rect.height for i in range(len(doc))}
+    doc.close()
+
+    figures = match_figures_to_questions(figures, question_crops, page_heights)
+    figure_map: dict[int, str] = {
+        f.matched_question: f.file_path
+        for f in figures
+        if f.matched_question is not None
+    }
+    _update(job_id, progress=0.45)
+
+    # ── Stage 4: Vision OCR per question crop ─────────────────────────────────
+    _update(job_id, current_step="Stage 4: Vision OCR on question crops")
+    vision_results = []
+    total = len(question_crops)
+
+    for i, crop in enumerate(question_crops, start=1):
+        vr = extract_question_from_image(crop.file_path, crop.question_number)
+        vision_results.append(vr)
+        _update(
+            job_id,
+            questions_done=i,
+            progress=round(0.45 + (i / max(total, 1)) * 0.30, 3),
+            current_step=f"Stage 4: OCR question {i}/{total}",
+        )
+
+    # ── Stage 5: LaTeX → Unicode ───────────────────────────────────────────────
+    _update(job_id, current_step="Stage 5: Converting LaTeX to Unicode", progress=0.75)
+    for vr in vision_results:
+        vr.question_text = latex_to_unicode(vr.question_text)
+        vr.c1 = latex_to_unicode(vr.c1)
+        vr.c2 = latex_to_unicode(vr.c2)
+        vr.c3 = latex_to_unicode(vr.c3)
+        vr.c4 = latex_to_unicode(vr.c4)
+    for q in llm_questions:
+        q.question_text = latex_to_unicode(q.question_text)
+        q.c1 = latex_to_unicode(q.c1)
+        q.c2 = latex_to_unicode(q.c2)
+        q.c3 = latex_to_unicode(q.c3)
+        q.c4 = latex_to_unicode(q.c4)
+
+    # ── Stage 6: Verify + build rows ──────────────────────────────────────────
+    _update(job_id, current_step="Stage 6: Verifying extraction", progress=0.80)
+    rows = verify_and_build_rows(vision_results, llm_questions, figure_map)
+
+    # ── Stage 7: Write Excel ───────────────────────────────────────────────────
+    _update(job_id, current_step="Stage 7: Writing Excel file", progress=0.90)
+    out_path = str(Path(settings.output_dir) / f"{pdf_name}_{job_id[:8]}.xlsx")
+    build_excel(rows, out_path)
+
+    _update(
+        job_id,
+        status="done",
+        progress=1.0,
+        current_step="Complete",
+        output_path=out_path,
+        finished_at=datetime.utcnow().isoformat(),
+    )
