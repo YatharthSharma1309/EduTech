@@ -1,9 +1,9 @@
 # Python
+.venv/
+venv/
 backend/EduTech/
-backend/__pycache__/
-backend/app/__pycache__/
-backend/app/**/__pycache__/
-backend/*.pyc
+**/__pycache__/
+**/*.pyc
 backend/.env
 backend/uploads/
 backend/outputs/
