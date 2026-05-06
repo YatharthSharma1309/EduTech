@@ -8,6 +8,10 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
+    environment:
+      # Unload model from RAM immediately after each request (default is 5 min).
+      # Keeps memory free when the pipeline is idle.
+      - OLLAMA_KEEP_ALIVE=0
     restart: unless-stopped
     # Uncomment for NVIDIA GPU support:
     # deploy:
