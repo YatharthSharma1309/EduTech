@@ -19,8 +19,8 @@ Upload a single exam PDF (questions and answers in the same file). The pipeline 
 | Layer | Tech |
 |-------|------|
 | Backend | FastAPI, PyMuPDF, httpx |
-| LLM (text) | Ollama — llama3.2 |
-| LLM (vision) | Ollama — qwen2.5vl:7b |
+| LLM (text) | Ollama — qwen2.5:3b |
+| LLM (vision) | Ollama — qwen2.5vl:3b |
 | Output | openpyxl (Excel) |
 | Frontend | Next.js 14, TypeScript, Tailwind CSS |
 

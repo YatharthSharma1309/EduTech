@@ -13,7 +13,7 @@
 ## 1. Pull Ollama Models
 
 ```bash
-ollama pull llama3.2          # text model — splits Q/A from PDF text
+ollama pull qwen2.5:3b        # text model — splits Q/A from PDF text
 ollama pull qwen2.5vl:7b      # vision model — OCR on question images
 ```
 
@@ -159,7 +159,7 @@ EduTech/
 ```
 PDF uploaded
   │
-  ├─ Stage 1: LLM (llama3.2) reads text, splits questions from answers
+  ├─ Stage 1: LLM (qwen2.5:3b) reads text, splits questions from answers
   ├─ Stage 2: PyMuPDF renders pages to PNG, crops one image per question
   ├─ Stage 3: Embedded figures extracted, matched to questions by y-position
   ├─ Stage 4: Vision model (qwen2.5vl) OCRs each question crop
@@ -175,7 +175,7 @@ PDF uploaded
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
-| `OLLAMA_TEXT_MODEL` | `llama3.2` | Model for Q/A splitting and verification |
+| `OLLAMA_TEXT_MODEL` | `qwen2.5:3b` | Model for Q/A splitting and verification |
 | `OLLAMA_VISION_MODEL` | `qwen2.5vl:7b` | Vision model for question OCR |
 | `PDF_UPLOAD_DIR` | `uploads/pdfs` | Where uploaded PDFs are saved |
 | `IMAGE_DIR` | `uploads/images` | Where rendered PNGs are saved |

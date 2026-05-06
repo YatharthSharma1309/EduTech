@@ -1,47 +1,20 @@
-.PHONY: help setup dev build stop restart logs pull-models clean
+.PHONY: help backend frontend models
 
 help:
 	@echo ""
 	@echo "  EduTech PDF Extractor — available commands"
 	@echo ""
-	@echo "  make setup        Copy .env.example → .env (first-time setup)"
-	@echo "  make dev          Start all services (builds if needed)"
-	@echo "  make build        Rebuild Docker images"
-	@echo "  make stop         Stop all services"
-	@echo "  make restart      Stop then start"
-	@echo "  make pull-models  Pull Ollama models into running container"
-	@echo "  make logs         Tail logs from all services"
-	@echo "  make clean        Remove containers, images, volumes"
+	@echo "  make models     Pull required Ollama models"
+	@echo "  make backend    Start the FastAPI backend (port 8000)"
+	@echo "  make frontend   Start the Next.js frontend (port 3000)"
 	@echo ""
 
-setup:
-	@test -f .env || (cp .env.example .env && echo ".env created — edit if needed")
+models:
+	ollama pull qwen2.5:3b
+	ollama pull qwen2.5vl:3b
 
-dev: setup
-	docker compose up --build -d
-	@echo ""
-	@echo "  Frontend  → http://localhost:$${FRONTEND_PORT:-3000}"
-	@echo "  Backend   → http://localhost:$${BACKEND_PORT:-8000}"
-	@echo "  API docs  → http://localhost:$${BACKEND_PORT:-8000}/docs"
-	@echo "  Ollama    → http://localhost:11434"
-	@echo ""
-	@echo "  Models are being pulled in the background (ollama-init)."
-	@echo "  Run 'make logs' to monitor progress."
+backend:
+	cd backend && venv\Scripts\uvicorn app.main:app --reload --port 8000
 
-build:
-	docker compose build --no-cache
-
-stop:
-	docker compose down
-
-restart: stop dev
-
-pull-models:
-	docker compose exec ollama ollama pull llama3.2
-	docker compose exec ollama ollama pull qwen2.5vl:3b
-
-logs:
-	docker compose logs -f
-
-clean:
-	docker compose down --rmi all --volumes --remove-orphans
+frontend:
+	cd frontend && npm run dev
