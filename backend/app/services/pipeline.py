@@ -31,6 +31,7 @@ from app.config import settings
 from app.services.excel_builder import build_excel
 from app.services.figure_extractor import extract_and_assign_figures
 from app.services.latex_converter import latex_to_unicode
+from app.services.pdf_cache import is_cached, load_cache, pdf_sha256, save_cache
 from app.services.pdf_renderer import crop_question_images, render_pdf_pages
 from app.services.question_splitter import extract_pdf_text, split_questions_with_llm
 from app.services.verifier import verify_and_build_rows
@@ -68,6 +69,10 @@ def create_job() -> str:
 
 def get_job(job_id: str) -> JobStatus | None:
     return _jobs.get(job_id)
+
+
+def list_jobs() -> list[JobStatus]:
+    return list(_jobs.values())
 
 
 def start_pipeline(pdf_path: str, job_id: str) -> None:
@@ -149,40 +154,60 @@ def _execute(pdf_path: str, job_id: str, work_dir: str) -> None:
     _update(job_id, current_step="Pre-flight: Checking Ollama…", progress=0.01)
     _preflight_ollama(job_id)
 
-    # ── Stage 1: Text extraction + LLM Q/A split ──────────────────────────────
-    _update(job_id, current_step="Stage 1: Extracting text and splitting Q/A", progress=0.05)
-    pdf_text = extract_pdf_text(pdf_path)
+    # ── Cache check: compute PDF hash, skip Stages 1–3 on hit ────────────────
+    _update(job_id, current_step="Checking cache…", progress=0.03)
+    pdf_hash = pdf_sha256(pdf_path)
+    cache_hit = is_cached(pdf_hash)
 
-    if not pdf_text.strip():
-        raise RuntimeError("Stage 1 failed: could not extract any text from the PDF. The file may be corrupted or empty.")
+    if cache_hit:
+        _warn(job_id, "Cache hit — skipping Stages 1–3 (text split, render, figures). Using pre-processed version.")
+        _update(job_id, current_step="Loading from cache (Stages 1–3 skipped)", progress=0.05)
+        llm_questions, question_crops, q_figures, page_heights = load_cache(pdf_hash, work_dir)
+        _update(job_id, total_questions=len(llm_questions), progress=0.45)
+    else:
+        # ── Stage 1: Text extraction + LLM Q/A split ─────────────────────────
+        _update(job_id, current_step="Stage 1: Extracting text and splitting Q/A", progress=0.05)
+        pdf_text = extract_pdf_text(pdf_path)
 
-    llm_questions, s1_tokens = split_questions_with_llm(pdf_text)
-    _add_tokens(job_id, "Split Q/A", s1_tokens)
+        if not pdf_text.strip():
+            raise RuntimeError("Stage 1 failed: could not extract any text from the PDF. The file may be corrupted or empty.")
 
-    if len(llm_questions) == 0:
-        _warn(job_id, "Stage 1: No questions found in PDF text — PDF appears to be image-only. Relying entirely on Vision OCR (Stage 4).")
+        llm_questions, s1_tokens = split_questions_with_llm(pdf_text)
+        _add_tokens(job_id, "Split Q/A", s1_tokens)
 
-    _update(job_id, total_questions=len(llm_questions), progress=0.20)
+        if len(llm_questions) == 0:
+            _warn(job_id, "Stage 1: No questions found in PDF text — PDF appears to be image-only. Relying entirely on Vision OCR (Stage 4).")
 
-    # ── Stage 2: Render pages + crop question images (temp) ───────────────────
-    _update(job_id, current_step="Stage 2: Rendering PDF pages to PNG")
-    render_pdf_pages(pdf_path, str(Path(work_dir) / "pages"), dpi=settings.render_dpi)
-    question_crops = crop_question_images(pdf_path, str(work_dir), dpi=settings.render_dpi)
+        _update(job_id, total_questions=len(llm_questions), progress=0.20)
 
-    if not question_crops:
-        raise RuntimeError("Stage 2 failed: could not detect any question boundaries in the PDF. Check that questions are numbered (e.g. '1.', 'Q1').")
+        # ── Stage 2: Render pages + crop question images (temp) ──────────────
+        _update(job_id, current_step="Stage 2: Rendering PDF pages to PNG")
+        render_pdf_pages(pdf_path, str(Path(work_dir) / "pages"), dpi=settings.render_dpi)
+        question_crops = crop_question_images(pdf_path, str(work_dir), dpi=settings.render_dpi)
 
-    _update(job_id, progress=0.35)
+        if not question_crops:
+            raise RuntimeError("Stage 2 failed: could not detect any question boundaries in the PDF. Check that questions are numbered (e.g. '1.', 'Q1').")
 
-    # ── Stage 3: Figure extraction + per-question assignment ─────────────────
-    _update(job_id, current_step="Stage 3: Extracting and matching figures")
+        _update(job_id, progress=0.35)
 
-    doc = fitz.open(pdf_path)
-    page_heights = {i + 1: doc[i].rect.height for i in range(len(doc))}
-    doc.close()
+        # ── Stage 3: Figure extraction + per-question assignment ─────────────
+        _update(job_id, current_step="Stage 3: Extracting and matching figures")
 
-    # Returns {q_num: [figure_path, ...]} — only first figure per question used in Excel
-    q_figures = extract_and_assign_figures(pdf_path, str(work_dir), question_crops, page_heights)
+        doc = fitz.open(pdf_path)
+        page_heights = {i + 1: doc[i].rect.height for i in range(len(doc))}
+        doc.close()
+
+        q_figures = extract_and_assign_figures(pdf_path, str(work_dir), question_crops, page_heights)
+        _update(job_id, progress=0.45)
+
+        # ── Save to cache for future re-uploads of the same PDF ──────────────
+        try:
+            save_cache(pdf_hash, llm_questions, question_crops, q_figures, page_heights)
+            print(f"[pipeline] Cache saved for {pdf_hash[:12]}…", flush=True)
+        except Exception as exc:
+            print(f"[pipeline] Cache save failed (non-fatal): {exc}", flush=True)
+
+    # Build figure_map and figure_counts from q_figures (shared by cache hit + miss paths)
     figure_map: dict[int, str] = {
         q_num: paths[0]
         for q_num, paths in q_figures.items()
@@ -190,7 +215,6 @@ def _execute(pdf_path: str, job_id: str, work_dir: str) -> None:
     }
     # Count of figures per question — passed to vision so it can insert [Figure N] placeholders
     figure_counts: dict[int, int] = {q_num: len(paths) for q_num, paths in q_figures.items()}
-    _update(job_id, progress=0.45)
 
     # ── Stage 4: Vision OCR per question crop (parallel) ─────────────────────
     _update(job_id, current_step="Stage 4: Vision OCR on question crops")

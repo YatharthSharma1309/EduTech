@@ -9,11 +9,18 @@ Output per question:
 import json
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 import fitz
 import httpx
 
 from app.config import settings
+
+try:
+    import pdfplumber
+    _PDFPLUMBER_AVAILABLE = True
+except ImportError:
+    _PDFPLUMBER_AVAILABLE = False
 
 
 @dataclass
@@ -28,15 +35,40 @@ class ParsedQuestion:
 
 
 def extract_pdf_text(pdf_path: str) -> str:
-    """Extract all text from PDF using PyMuPDF, page-separated."""
+    """
+    Extract all text from PDF, page-separated.
+
+    Mohak fix: raises FileNotFoundError early rather than letting PyMuPDF
+    throw an opaque error. Falls back to pdfplumber for ligature-heavy or
+    copy-protected PDFs where PyMuPDF returns empty text.
+    """
+    if not Path(pdf_path).exists():
+        raise FileNotFoundError(f"PDF not found: {pdf_path}")
+
+    # Primary: PyMuPDF
     doc = fitz.open(pdf_path)
     pages = []
     for i, page in enumerate(doc, start=1):
         text = page.get_text("text").strip()
-        if text:
+        if text:                              # skip blank pages (Mohak fix)
             pages.append(f"--- Page {i} ---\n{text}")
     doc.close()
-    return "\n\n".join(pages)
+
+    if pages:
+        return "\n\n".join(pages)
+
+    # Fallback: pdfplumber (handles ligatures and some copy-protected PDFs)
+    if _PDFPLUMBER_AVAILABLE:
+        print("[question_splitter] PyMuPDF returned empty — trying pdfplumber", flush=True)
+        with pdfplumber.open(pdf_path) as pdf:
+            for i, page in enumerate(pdf.pages, start=1):
+                text = (page.extract_text() or "").strip()
+                if text:
+                    pages.append(f"--- Page {i} ---\n{text}")
+        if pages:
+            return "\n\n".join(pages)
+
+    return ""
 
 
 _SYSTEM_PROMPT = """You are a PDF question parser. Given raw text extracted from an exam paper PDF, extract all MCQ questions and their answers.

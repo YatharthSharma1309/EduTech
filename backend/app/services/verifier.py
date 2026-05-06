@@ -113,9 +113,13 @@ def verify_and_build_rows(
                 vr.question_text, vr.c1, vr.c2, vr.c3, vr.c4
             ]))
 
-            # Fast path: high fuzzy similarity against LLM text → skip VLM call
-            skip_vlm = False
-            if llm_q:
+            # Fast path 1: no LLM questions at all (image-only PDF) → nothing to
+            # validate against, skip VLM entirely to avoid re-running the same
+            # vision model on the same crop it just processed in Stage 4.
+            skip_vlm = not bool(llm_by_num)
+
+            # Fast path 2: high fuzzy similarity against LLM text → skip VLM call
+            if llm_q and not skip_vlm:
                 sim = fuzz.ratio(vr.question_text, llm_q.question_text)
                 if sim >= FUZZY_SKIP_THRESHOLD:
                     skip_vlm = True

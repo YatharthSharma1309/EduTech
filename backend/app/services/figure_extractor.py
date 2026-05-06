@@ -87,9 +87,11 @@ def extract_and_assign_figures(
 
 
 def _get_image_y(page: fitz.Page, xref: int) -> float:
-    for item in page.get_image_info(xrefs=True):
-        if item.get("xref") == xref:
-            return float(item["bbox"][1])
+    # Mohak fix: get_image_rects is a direct O(1) lookup vs the O(n) loop
+    # over get_image_info that we had before.
+    rects = page.get_image_rects(xref)
+    if rects:
+        return float(rects[0].y0)
     return 0.0
 
 
@@ -101,18 +103,24 @@ def _assign_to_question(
     """
     Return the question number whose bounding box contains (page_num, img_y).
     Falls back to the nearest question on the same page if no exact match.
-    """
-    best_q = None
-    best_dist = float("inf")
 
-    for q_num, (q_page, y_top, y_bottom) in q_boxes.items():
-        if q_page != page_num:
-            continue
+    Mohak fix: figures that appear above the first question marker on the page
+    are explicitly assigned to the lowest-numbered question on that page
+    (previously dropped silently).
+    """
+    same_page = {q: (yt, yb) for q, (pg, yt, yb) in q_boxes.items() if pg == page_num}
+    if not same_page:
+        return None
+
+    for q_num, (y_top, y_bottom) in same_page.items():
         if y_top <= img_y <= y_bottom:
             return q_num
-        dist = min(abs(img_y - y_top), abs(img_y - y_bottom))
-        if dist < best_dist:
-            best_dist = dist
-            best_q = q_num
 
+    # Figure is above the first question marker — assign to lowest Q on this page
+    first_q = min(same_page, key=lambda q: same_page[q][0])
+    if img_y < same_page[first_q][0]:
+        return first_q
+
+    # Nearest question by distance (below last marker)
+    best_q = min(same_page, key=lambda q: min(abs(img_y - same_page[q][0]), abs(img_y - same_page[q][1])))
     return best_q

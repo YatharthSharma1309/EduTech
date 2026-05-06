@@ -13,7 +13,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from app.config import settings
-from app.services.pipeline import create_job, get_job, start_pipeline
+from app.services.pipeline import create_job, get_job, list_jobs, start_pipeline
 
 router = APIRouter()
 
@@ -40,6 +40,11 @@ def extract(file: UploadFile = File(...)):
         "status": "pending",
         "message": "Pipeline started. Poll /api/jobs/{job_id} for progress.",
     }
+
+
+@router.get("/jobs", summary="List all jobs")
+def jobs_list():
+    return [{"job_id": j.job_id, "status": j.status, "created_at": j.created_at} for j in list_jobs()]
 
 
 @router.get("/jobs/{job_id}", summary="Poll extraction job progress")

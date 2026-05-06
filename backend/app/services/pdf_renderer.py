@@ -67,9 +67,17 @@ def _detect_question_starts(page: fitz.Page) -> list[tuple[int, float]]:
     """
     Return list of (question_number, y_top_absolute) for each question
     boundary found on this page using text block positions.
+
+    Mohak fix: sort blocks by (y, x) for correct reading order in multi-column
+    layouts, and enforce sequential numbering to avoid matching answer-choice
+    labels (e.g. "1)" inside a question) as question starts.
     """
     blocks = page.get_text("blocks")  # (x0, y0, x1, y1, text, block_no, block_type)
+    # Sort top-to-bottom, left-to-right (fixes multi-column PDFs)
+    blocks = sorted(blocks, key=lambda b: (b[1], b[0]))
+
     hits: list[tuple[int, float]] = []
+    expected_num = 1  # enforce sequential numbering
 
     for block in blocks:
         if block[6] != 0:  # skip image blocks
@@ -79,7 +87,11 @@ def _detect_question_starts(page: fitz.Page) -> list[tuple[int, float]]:
         for pattern in _Q_PATTERNS:
             m = pattern.match(first_line)
             if m:
-                hits.append((int(m.group(1)), float(block[1])))  # q_num, y_top
+                q_num = int(m.group(1))
+                # Only accept if this is the next expected question number
+                if q_num == expected_num:
+                    hits.append((q_num, float(block[1])))
+                    expected_num += 1
                 break
 
     return hits
@@ -141,8 +153,19 @@ def crop_question_images(
         else:
             y_bottom = h
 
-        # Clip rect in PDF points
-        clip = fitz.Rect(0, y_top, page.rect.width, y_bottom)
+        # Mohak fix: first question starts from top of page to capture any
+        # reference diagram printed above the Q1 marker.
+        # All others get a 5-point upward pad to avoid clipping the first line.
+        if i == 0:
+            y_top_clip = 0.0
+        else:
+            y_top_clip = max(0.0, y_top - 5)
+
+        # Mohak fix: skip degenerate clips that would crash PyMuPDF
+        if y_bottom - y_top_clip < 1:
+            continue
+
+        clip = fitz.Rect(0, y_top_clip, page.rect.width, y_bottom)
         pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
         path = out / f"q_{q_num:04d}.png"
         pix.save(str(path))

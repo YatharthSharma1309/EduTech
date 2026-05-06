@@ -25,6 +25,9 @@ desktop.ini
 # PDF uploads
 *.pdf
 
+# Pre-processed PDF cache (auto-generated, can be large)
+backend/cache/
+
 # Ollama local model weights
 ollama/
 
