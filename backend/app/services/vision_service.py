@@ -1,7 +1,11 @@
 """
 Ollama vision model wrapper.
-Sends a question crop image to qwen2.5vl and extracts structured text:
-  question stem, four choices, and any [IMAGE] placeholders.
+Sends a question crop image to qwen2.5vl and extracts structured fields:
+  question stem, four choices, and [Figure N] placeholders.
+
+Prompt approach adapted from MohakGuptaWhilter/QuestionAnswerTesting:
+  Step 1 — scan entire image for visual elements first
+  Step 2 — extract text top-to-bottom, inserting [Figure N] at each visual
 """
 
 import base64
@@ -28,20 +32,44 @@ class VisionResult:
     error: str = ""        # non-empty if vision call failed
 
 
-_VISION_PROMPT = """Look at this exam question image carefully.
+_FIGURE_RULE_PRESENT = """\
+- This question has {n} embedded visual element(s).
+- As you read top-to-bottom, each time a figure, diagram, graph, or image appears \
+insert the next numbered placeholder: [Figure 1] for the first, [Figure 2] for the \
+second, and so on.
+- If an answer option IS a visual (not a text value), write it as the choice text \
+followed by [Figure N].
+- Place each [Figure N] exactly where the visual sits — do NOT group them at the end."""
 
-Extract the following and return as a JSON object with these exact keys:
-  "question_text": the question stem (no option labels),
-  "c1": text of option/choice 1 (strip any label like A), (1), 1.),
-  "c2": text of option/choice 2,
-  "c3": text of option/choice 3,
-  "c4": text of option/choice 4
+_FIGURE_RULE_ABSENT = """\
+- No figures were detected by the PDF parser for this question.
+- If you can still see a figure, graph, diagram, or image in the crop, insert \
+[Figure 1] at that position (and [Figure 2], etc. for additional visuals).
+- If there are truly no visual elements, do not write any [Figure N] token."""
 
-Rules:
-- Where a diagram or figure appears in the question or an option, write [IMAGE] as a placeholder.
-- Convert all math to plain Unicode (e.g. x² not x^2, α not \\alpha).
-- Do NOT include answer keys — only extract the question and choices.
+_PROMPT_TEMPLATE = """\
+You are an expert exam question extractor.
+
+STEP 1 — SCAN THE ENTIRE IMAGE FOR VISUAL ELEMENTS:
+Before reading any text, look at the whole image and identify every figure, graph, \
+diagram, or image — both inside the question stem and inside any answer options.
+
+STEP 2 — EXTRACT AND RETURN JSON with these exact keys:
+  "question_text": the question stem only (no choice labels),
+  "c1": text of choice 1 (strip labels like A), (1), 1.),
+  "c2": text of choice 2,
+  "c3": text of choice 3,
+  "c4": text of choice 4
+
+FIGURE PLACEHOLDER RULES:
+{figure_instruction}
+
+EXTRACTION RULES:
+- Extract text exactly as visible. Do not rephrase or summarise.
+- Write math in plain Unicode: x² not x^2, √x not \\sqrt{{x}}, α not \\alpha.
+- Ignore watermarks, footers, page numbers, source labels (e.g. JEE Main 2024, MathonGo).
 - If fewer than 4 choices exist, leave missing ones as "".
+- Do NOT include answer keys — extract question and choices only.
 - Return ONLY valid JSON. No explanation, no markdown fences.
 """
 
@@ -49,23 +77,31 @@ Rules:
 def extract_question_from_image(
     image_path: str,
     question_number: int,
+    figure_count: int = 0,
 ) -> VisionResult:
     """Call Ollama vision model on a question crop image."""
     img_bytes = Path(image_path).read_bytes()
     b64 = base64.b64encode(img_bytes).decode()
+
+    figure_instruction = (
+        _FIGURE_RULE_PRESENT.format(n=figure_count)
+        if figure_count > 0
+        else _FIGURE_RULE_ABSENT
+    )
+    prompt = _PROMPT_TEMPLATE.format(figure_instruction=figure_instruction)
 
     payload = {
         "model": settings.ollama_vision_model,
         "messages": [
             {
                 "role": "user",
-                "content": _VISION_PROMPT,
+                "content": prompt,
                 "images": [b64],
             }
         ],
         "stream": False,
         "format": "json",
-        "options": {"num_predict": 300},
+        "options": {"temperature": 0, "num_predict": 1024},
     }
 
     try:

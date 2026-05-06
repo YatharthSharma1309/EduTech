@@ -1,10 +1,14 @@
 """
-Extracts embedded figures from a PDF and matches each figure
-to its nearest question by y-position proximity.
+Extracts embedded figures from a PDF and assigns each figure to the question
+whose vertical region it falls within.
+
+Approach adapted from MohakGuptaWhilter/QuestionAnswerTesting:
+  - Compute exact (page, y_top, y_bottom) bounding box per question.
+  - Assign each figure to the question whose box contains the figure's y position.
+  - Falls back to nearest question only when no box contains the figure.
 """
 
-import base64
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import fitz
@@ -15,104 +19,100 @@ class ExtractedFigure:
     page_number: int       # 1-indexed
     y_top: float           # absolute y in PDF points
     file_path: str
-    base64_data: str
-    matched_question: int | None = None   # filled after matching
+    matched_question: int | None = None
 
 
-def extract_figures(pdf_path: str, output_dir: str) -> list[ExtractedFigure]:
+def extract_and_assign_figures(
+    pdf_path: str,
+    output_dir: str,
+    question_crops: list,   # list[QuestionCrop] from pdf_renderer
+    page_heights: dict[int, float],
+) -> dict[int, list[str]]:
     """
-    Extract all embedded raster images from the PDF.
-    Skips tiny images (likely decorations) under 50x50 px.
-    De-duplicates by xref so the same image isn't saved twice.
+    Extract all embedded images from the PDF and assign each to a question
+    using the question's bounding box.
+
+    Returns {question_number: [figure_path, ...]} — only questions with figures included.
     """
     out = Path(output_dir) / "figures"
     out.mkdir(parents=True, exist_ok=True)
 
+    # Build per-question bounding boxes: {q_num: (page_number, y_top_abs, y_bottom_abs)}
+    q_boxes: dict[int, tuple[int, float, float]] = {}
+    for crop in question_crops:
+        h = page_heights.get(crop.page_number, 800.0)
+        q_boxes[crop.question_number] = (
+            crop.page_number,
+            crop.y_top * h,
+            crop.y_bottom * h,
+        )
+
     doc = fitz.open(pdf_path)
     seen_xrefs: set[int] = set()
-    figures: list[ExtractedFigure] = []
+    q_figures: dict[int, list[str]] = {}
     fig_idx = 0
 
     for page_idx, page in enumerate(doc):
-        img_list = page.get_images(full=True)
+        page_num = page_idx + 1
 
-        for img_info in img_list:
+        for img_info in page.get_images(full=True):
             xref = img_info[0]
             if xref in seen_xrefs:
                 continue
             seen_xrefs.add(xref)
 
-            # Get image bytes
             base_image = doc.extract_image(xref)
             if not base_image:
                 continue
+            if base_image["width"] < 50 or base_image["height"] < 50:
+                continue
 
-            w, h = base_image["width"], base_image["height"]
-            if w < 50 or h < 50:
+            # Get figure's y position on its page
+            img_y = _get_image_y(page, xref)
+
+            # Find which question's bounding box contains this figure
+            assigned_q = _assign_to_question(page_num, img_y, q_boxes)
+            if assigned_q is None:
                 continue
 
             ext = base_image["ext"]
-            img_bytes = base_image["image"]
-
             fig_idx += 1
-            path = out / f"fig_{fig_idx:04d}_p{page_idx + 1}.{ext}"
-            path.write_bytes(img_bytes)
+            path = out / f"fig_{fig_idx:04d}_q{assigned_q}.{ext}"
+            path.write_bytes(base_image["image"])
 
-            # Find y position of this image on the page via image bbox
-            y_top = _get_image_y(page, xref)
-
-            figures.append(ExtractedFigure(
-                page_number=page_idx + 1,
-                y_top=y_top,
-                file_path=str(path),
-                base64_data=base64.b64encode(img_bytes).decode(),
-            ))
+            q_figures.setdefault(assigned_q, []).append(str(path))
 
     doc.close()
-    return figures
+    return q_figures
 
 
 def _get_image_y(page: fitz.Page, xref: int) -> float:
-    """Return the top y-coordinate (PDF points) of an image on its page."""
     for item in page.get_image_info(xrefs=True):
         if item.get("xref") == xref:
             return float(item["bbox"][1])
     return 0.0
 
 
-def match_figures_to_questions(
-    figures: list[ExtractedFigure],
-    question_crops: list,   # list[QuestionCrop] — avoid circular import
-    page_heights: dict[int, float],
-) -> list[ExtractedFigure]:
+def _assign_to_question(
+    page_num: int,
+    img_y: float,
+    q_boxes: dict[int, tuple[int, float, float]],
+) -> int | None:
     """
-    For each figure, find the question whose y-range on the same page
-    contains (or is closest to) the figure's y_top.
-    Mutates matched_question on each ExtractedFigure.
+    Return the question number whose bounding box contains (page_num, img_y).
+    Falls back to the nearest question on the same page if no exact match.
     """
-    for fig in figures:
-        best_q = None
-        best_dist = float("inf")
+    best_q = None
+    best_dist = float("inf")
 
-        for crop in question_crops:
-            if crop.page_number != fig.page_number:
-                continue
+    for q_num, (q_page, y_top, y_bottom) in q_boxes.items():
+        if q_page != page_num:
+            continue
+        if y_top <= img_y <= y_bottom:
+            return q_num
+        dist = min(abs(img_y - y_top), abs(img_y - y_bottom))
+        if dist < best_dist:
+            best_dist = dist
+            best_q = q_num
 
-            h = page_heights.get(fig.page_number, 800.0)
-            q_y_top_abs = crop.y_top * h
-            q_y_bot_abs = crop.y_bottom * h
-
-            # Inside the question's vertical range
-            if q_y_top_abs <= fig.y_top <= q_y_bot_abs:
-                best_q = crop.question_number
-                break
-
-            # Otherwise find nearest by distance
-            dist = min(abs(fig.y_top - q_y_top_abs), abs(fig.y_top - q_y_bot_abs))
-            if dist < best_dist:
-                best_dist = dist
-                best_q = crop.question_number
-
-        fig.matched_question = best_q
-
-    return figures
+    return best_q
