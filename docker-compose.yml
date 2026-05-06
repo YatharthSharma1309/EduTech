@@ -1,0 +1,85 @@
+services:
+
+  # ── Ollama (local LLM server) ────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: edutech-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ── Model puller (runs once on first start, exits) ──────────────────────────
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: edutech-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Pulling llama3.2..."
+        ollama pull llama3.2
+        echo "Pulling qwen2.5vl:3b..."
+        ollama pull qwen2.5vl:3b
+        echo "Models ready."
+    restart: "no"
+
+  # ── Backend (FastAPI) ────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: edutech-backend
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_TEXT_MODEL=${OLLAMA_TEXT_MODEL:-llama3.2}
+      - OLLAMA_VISION_MODEL=${OLLAMA_VISION_MODEL:-qwen2.5vl:3b}
+      - RENDER_DPI=${RENDER_DPI:-100}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+    volumes:
+      - excel_outputs:/app/outputs
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Frontend (Next.js) ───────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    container_name: edutech-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  ollama_data:      # persists downloaded model weights across restarts
+  excel_outputs:    # persists generated Excel files
+
+networks:
+  default:
+    name: edutech-network

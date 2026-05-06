@@ -11,6 +11,12 @@ class Settings(BaseSettings):
 
     render_dpi: int = 100  # PDF page render resolution
 
+    cors_origins: str = "http://localhost:3000"  # comma-separated list
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",")]
+
     class Config:
         env_file = ".env"
 

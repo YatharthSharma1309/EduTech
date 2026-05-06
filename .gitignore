@@ -30,3 +30,6 @@ ollama/
 
 # Claude Code local commands (personal, not shared)
 .claude/commands/
+
+# Docker / root env (copy from .env.example)
+.env
