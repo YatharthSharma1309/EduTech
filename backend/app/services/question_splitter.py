@@ -1,5 +1,5 @@
 """
-Extracts raw text from PDF and uses Ollama to split it into
+Extracts raw text from PDF and uses an LLM to split it into
 structured questions (with choices) and answers.
 
 Output per question:
@@ -96,15 +96,16 @@ _CHUNK_SIZE = 6000   # chars per LLM call — keeps responses fast and within co
 
 def split_questions_with_llm(pdf_text: str) -> tuple[list[ParsedQuestion], int]:
     """
-    Split pdf_text into chunks and call Ollama on each.
+    Split pdf_text into chunks and call the configured LLM on each.
     Returns (questions, total_tokens_used).
     """
+    _call = _call_anthropic if settings.use_anthropic_vision else _call_ollama
     chunks = _chunk_text(pdf_text, _CHUNK_SIZE)
     all_results: dict[int, ParsedQuestion] = {}
     total_tokens = 0
 
     for chunk in chunks:
-        items, tokens = _call_ollama(chunk)
+        items, tokens = _call(chunk)
         total_tokens += tokens
         for item in items:
             q_num = item.question_number
@@ -158,6 +159,56 @@ def _call_ollama(chunk: str) -> tuple[list[ParsedQuestion], int]:
     body = resp.json()
     tokens = body.get("prompt_eval_count", 0) + body.get("eval_count", 0)
     raw = body["message"]["content"]
+    data = _safe_parse_json(raw)
+
+    results: list[ParsedQuestion] = []
+    for item in data:
+        try:
+            results.append(ParsedQuestion(
+                question_number=int(item.get("question_number", 0)),
+                question_text=str(item.get("question_text", "")).strip(),
+                c1=str(item.get("c1", "")).strip(),
+                c2=str(item.get("c2", "")).strip(),
+                c3=str(item.get("c3", "")).strip(),
+                c4=str(item.get("c4", "")).strip(),
+                answer=str(item.get("answer", "")).strip(),
+            ))
+        except (TypeError, ValueError):
+            continue
+    return results, tokens
+
+
+def _call_anthropic(chunk: str) -> tuple[list[ParsedQuestion], int]:
+    """Returns (questions, tokens_used) via Anthropic Claude API."""
+    payload = {
+        "model": settings.anthropic_model,
+        "max_tokens": 4096,
+        "system": _SYSTEM_PROMPT,
+        "messages": [{"role": "user", "content": chunk}],
+    }
+    headers = {
+        "x-api-key": settings.anthropic_api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    try:
+        resp = httpx.post(
+            "https://api.anthropic.com/v1/messages",
+            json=payload,
+            headers=headers,
+            timeout=120.0,
+        )
+        resp.raise_for_status()
+    except httpx.TimeoutException:
+        print("[question_splitter] Anthropic timeout on chunk — skipping", flush=True)
+        return [], 0
+
+    body = resp.json()
+    usage = body.get("usage", {})
+    tokens = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+    raw = "".join(
+        block.get("text", "") for block in body.get("content", []) if block.get("type") == "text"
+    )
     data = _safe_parse_json(raw)
 
     results: list[ParsedQuestion] = []

@@ -53,26 +53,68 @@ def _vlm_validate(image_path: str, transcription: str) -> dict:
     try:
         with open(image_path, "rb") as fh:
             image_b64 = base64.b64encode(fh.read()).decode()
-        payload = {
-            "model": settings.ollama_vision_model,
-            "messages": [{"role": "user", "content": prompt, "images": [image_b64]}],
-            "stream": False,
-            "options": {"temperature": 0, "num_predict": 512},
-        }
-        resp = httpx.post(
-            f"{settings.ollama_base_url}/api/chat",
-            json=payload,
-            timeout=None,
-        )
-        resp.raise_for_status()
-        raw = resp.json()["message"]["content"].strip()
+        if settings.use_anthropic_vision:
+            payload = {
+                "model": settings.anthropic_model,
+                "max_tokens": 300,
+                "system": "Return only valid JSON.",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": image_b64,
+                                },
+                            },
+                            {"type": "text", "text": prompt},
+                        ],
+                    }
+                ],
+            }
+            headers = {
+                "x-api-key": settings.anthropic_api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            }
+            resp = httpx.post(
+                "https://api.anthropic.com/v1/messages",
+                json=payload,
+                headers=headers,
+                timeout=60.0,
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            raw = "".join(
+                block.get("text", "") for block in body.get("content", []) if block.get("type") == "text"
+            ).strip()
+            usage = body.get("usage", {})
+            tokens = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+        else:
+            payload = {
+                "model": settings.ollama_vision_model,
+                "messages": [{"role": "user", "content": prompt, "images": [image_b64]}],
+                "stream": False,
+                "options": {"temperature": 0, "num_predict": 512},
+            }
+            resp = httpx.post(
+                f"{settings.ollama_base_url}/api/chat",
+                json=payload,
+                timeout=None,
+            )
+            resp.raise_for_status()
+            raw = resp.json()["message"]["content"].strip()
+            tokens = (
+                resp.json().get("prompt_eval_count", 0)
+                + resp.json().get("eval_count", 0)
+            )
+
         # Extract JSON even if model wraps it in text
         start, end = raw.find("{"), raw.rfind("}") + 1
         result = json.loads(raw[start:end]) if start != -1 else {}
-        tokens = (
-            resp.json().get("prompt_eval_count", 0)
-            + resp.json().get("eval_count", 0)
-        )
         return {**result, "_tokens": tokens}
     except Exception as exc:
         return {"match": True, "issues": [], "confidence": 1.0, "_tokens": 0, "_error": str(exc)}

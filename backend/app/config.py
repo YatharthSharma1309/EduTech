@@ -5,6 +5,8 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_text_model: str = "qwen2.5:3b"
     ollama_vision_model: str = "qwen2.5vl:3b"
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-haiku-4-5"
 
     pdf_upload_dir: str = "uploads/pdfs"
     output_dir: str = "outputs"
@@ -19,6 +21,10 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",")]
+
+    @property
+    def use_anthropic_vision(self) -> bool:
+        return bool(self.anthropic_api_key.strip())
 
     class Config:
         env_file = ".env"

@@ -1,5 +1,5 @@
 """
-Ollama vision model wrapper.
+Vision model wrapper.
 Sends a question crop image to qwen2.5vl and extracts structured fields:
   question stem, four choices, and [Figure N] placeholders.
 
@@ -79,7 +79,7 @@ def extract_question_from_image(
     question_number: int,
     figure_count: int = 0,
 ) -> VisionResult:
-    """Call Ollama vision model on a question crop image."""
+    """Call configured vision model on a question crop image."""
     img_bytes = Path(image_path).read_bytes()
     b64 = base64.b64encode(img_bytes).decode()
 
@@ -90,30 +90,11 @@ def extract_question_from_image(
     )
     prompt = _PROMPT_TEMPLATE.format(figure_instruction=figure_instruction)
 
-    payload = {
-        "model": settings.ollama_vision_model,
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt,
-                "images": [b64],
-            }
-        ],
-        "stream": False,
-        "format": "json",
-        "options": {"temperature": 0, "num_predict": 1024},
-    }
-
     try:
-        resp = httpx.post(
-            f"{settings.ollama_base_url}/api/chat",
-            json=payload,
-            timeout=None,
-        )
-        resp.raise_for_status()
-        body = resp.json()
-        tokens = body.get("prompt_eval_count", 0) + body.get("eval_count", 0)
-        raw = body["message"]["content"]
+        if settings.use_anthropic_vision:
+            raw, tokens = _call_anthropic_vision(prompt, b64)
+        else:
+            raw, tokens = _call_ollama_vision(prompt, b64)
         parsed = _parse_vision_json(raw)
 
         return VisionResult(
@@ -146,3 +127,71 @@ def _parse_vision_json(raw: str) -> dict:
         return json.loads(raw)
     except json.JSONDecodeError:
         return {}
+
+
+def _call_ollama_vision(prompt: str, image_b64: str) -> tuple[str, int]:
+    payload = {
+        "model": settings.ollama_vision_model,
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt,
+                "images": [image_b64],
+            }
+        ],
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": 0, "num_predict": 1024},
+    }
+    resp = httpx.post(
+        f"{settings.ollama_base_url}/api/chat",
+        json=payload,
+        timeout=None,
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    tokens = body.get("prompt_eval_count", 0) + body.get("eval_count", 0)
+    return body["message"]["content"], tokens
+
+
+def _call_anthropic_vision(prompt: str, image_b64: str) -> tuple[str, int]:
+    payload = {
+        "model": settings.anthropic_model,
+        "max_tokens": 700,
+        "system": "Return only valid JSON.",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": image_b64,
+                        },
+                    },
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ],
+    }
+    headers = {
+        "x-api-key": settings.anthropic_api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    resp = httpx.post(
+        "https://api.anthropic.com/v1/messages",
+        json=payload,
+        headers=headers,
+        timeout=90.0,
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    text = "".join(
+        block.get("text", "") for block in body.get("content", []) if block.get("type") == "text"
+    )
+    usage = body.get("usage", {})
+    tokens = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+    return text, tokens

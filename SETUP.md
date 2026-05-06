@@ -177,6 +177,8 @@ PDF uploaded
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
 | `OLLAMA_TEXT_MODEL` | `qwen2.5:3b` | Model for Q/A splitting and verification |
 | `OLLAMA_VISION_MODEL` | `qwen2.5vl:7b` | Vision model for question OCR |
+| `ANTHROPIC_API_KEY` | `` | Claude API key used by n8n workflow |
+| `ANTHROPIC_MODEL` | `claude-haiku-4-5` | Claude model name for n8n vision request |
 | `PDF_UPLOAD_DIR` | `uploads/pdfs` | Where uploaded PDFs are saved |
 | `IMAGE_DIR` | `uploads/images` | Where rendered PNGs are saved |
 | `OUTPUT_DIR` | `outputs` | Where Excel files are saved |

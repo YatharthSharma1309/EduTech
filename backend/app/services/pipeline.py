@@ -106,7 +106,11 @@ def _warn(job_id: str, message: str) -> None:
 
 
 def _preflight_ollama(job_id: str) -> None:
-    """Verify Ollama is reachable and both required models are available."""
+    """Verify Ollama is reachable and required model(s) are available."""
+    if settings.use_anthropic_vision:
+        # Both text and vision are handled by Anthropic — Ollama not needed.
+        return
+
     try:
         resp = httpx.get(f"{settings.ollama_base_url}/api/tags", timeout=10.0)
         resp.raise_for_status()
@@ -217,13 +221,15 @@ def _execute(pdf_path: str, job_id: str, work_dir: str) -> None:
     figure_counts: dict[int, int] = {q_num: len(paths) for q_num, paths in q_figures.items()}
 
     # ── Stage 4: Vision OCR per question crop (parallel) ─────────────────────
-    _update(job_id, current_step="Stage 4: Vision OCR on question crops")
+    provider = "Claude" if settings.use_anthropic_vision else "Ollama"
+    _update(job_id, current_step=f"Stage 4: Vision OCR ({provider}) on question crops")
     vision_results = []
     total = len(question_crops)
     done_count = 0
     ocr_errors = 0
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    workers = 6 if settings.use_anthropic_vision else 3
+    with ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_crop = {
             executor.submit(
                 extract_question_from_image,
@@ -253,8 +259,7 @@ def _execute(pdf_path: str, job_id: str, work_dir: str) -> None:
 
     if ocr_errors == total:
         _warn(job_id, f"Stage 4: Vision OCR failed for ALL {total} questions (timed out). "
-                      "Ollama may be overloaded or the model is too slow on CPU. "
-                      "Try: ollama run qwen2.5vl:3b to pre-warm the model.")
+                      "Model provider may be unavailable or timing out.")
     elif ocr_errors > 0:
         _warn(job_id, f"Stage 4: {ocr_errors}/{total} questions failed OCR — using LLM text as fallback for those rows.")
 
