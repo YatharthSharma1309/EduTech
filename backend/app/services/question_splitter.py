@@ -60,7 +60,6 @@ Rules:
 
 
 _CHUNK_SIZE = 6000   # chars per LLM call — keeps responses fast and within context
-_TIMEOUT = 300.0     # 5 min per call; large models on CPU can be slow
 
 
 def split_questions_with_llm(pdf_text: str) -> tuple[list[ParsedQuestion], int]:
@@ -117,7 +116,7 @@ def _call_ollama(chunk: str) -> tuple[list[ParsedQuestion], int]:
         resp = httpx.post(
             f"{settings.ollama_base_url}/api/chat",
             json=payload,
-            timeout=_TIMEOUT,
+            timeout=None,
         )
         resp.raise_for_status()
     except httpx.TimeoutException:

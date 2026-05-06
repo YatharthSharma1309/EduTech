@@ -114,7 +114,7 @@ def _llm_equivalent(text_a: str, text_b: str) -> tuple[bool, int]:
                 "messages": [{"role": "user", "content": prompt}],
                 "stream": False,
             },
-            timeout=120.0,
+            timeout=None,
         )
         resp.raise_for_status()
         body = resp.json()
