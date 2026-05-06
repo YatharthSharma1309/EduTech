@@ -2,9 +2,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# System deps for PyMuPDF
+# curl is needed for the docker-compose healthcheck only
+# PyMuPDF ships its own bundled MuPDF — no system libmupdf needed
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libmupdf-dev \
     curl \
     && rm -rf /var/lib/apt/lists/*
 

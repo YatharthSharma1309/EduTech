@@ -9,14 +9,23 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
+    # Uncomment for NVIDIA GPU support:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      # Use ollama binary itself — curl is not available in the ollama image
+      test: ["CMD", "ollama", "list"]
       interval: 10s
-      timeout: 5s
+      timeout: 10s
       retries: 10
-      start_period: 20s
+      start_period: 30s
 
-  # ── Model puller (runs once on first start, exits) ──────────────────────────
+  # ── Model puller (runs once, exits when models are ready) ───────────────────
   ollama-init:
     image: ollama/ollama:latest
     container_name: edutech-ollama-init
@@ -28,12 +37,12 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        echo "Pulling llama3.2..."
-        ollama pull llama3.2
-        echo "Pulling qwen2.5vl:3b..."
-        ollama pull qwen2.5vl:3b
-        echo "Models ready."
-    restart: "no"
+        echo "Pulling ${OLLAMA_TEXT_MODEL:-llama3.2}..."
+        ollama pull ${OLLAMA_TEXT_MODEL:-llama3.2}
+        echo "Pulling ${OLLAMA_VISION_MODEL:-qwen2.5vl:3b}..."
+        ollama pull ${OLLAMA_VISION_MODEL:-qwen2.5vl:3b}
+        echo "All models ready."
+    restart: on-failure:3   # retry up to 3 times if pull fails (e.g. network blip)
 
   # ── Backend (FastAPI) ────────────────────────────────────────────────────────
   backend:
@@ -54,6 +63,8 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully   # wait for models to finish downloading
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
