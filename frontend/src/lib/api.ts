@@ -13,6 +13,8 @@ export interface JobStatus {
   finished_at: string;
   tokens: Record<string, number>;  // stage label → token count
   total_tokens: number;
+  warnings: string[];
+  vision_errors: number;
 }
 
 export async function uploadPdf(file: File): Promise<{ job_id: string }> {

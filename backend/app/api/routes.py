@@ -61,6 +61,8 @@ def job_status(job_id: str):
         "finished_at": job.finished_at,
         "tokens": job.tokens,          # { "Split Q/A": 1200, "Vision OCR": 8400, ... }
         "total_tokens": job.total_tokens,
+        "warnings": job.warnings,
+        "vision_errors": job.vision_errors,
     }
 
 

@@ -116,9 +116,24 @@ export default function UploadPanel() {
             {job.total_questions > 0 && (
               <p className="text-xs text-gray-400 mt-1">
                 {job.questions_done} / {job.total_questions} questions OCR'd
+                {job.vision_errors > 0 && (
+                  <span className="text-amber-500 ml-2">· {job.vision_errors} failed</span>
+                )}
               </p>
             )}
           </div>
+
+          {/* Live warnings */}
+          {job.warnings?.length > 0 && (
+            <div className="space-y-1">
+              {job.warnings.map((w, i) => (
+                <div key={i} className="flex gap-2 p-2.5 bg-amber-50 border border-amber-200 rounded-lg">
+                  <span className="text-amber-500 text-sm flex-shrink-0">⚠</span>
+                  <p className="text-xs text-amber-700 leading-snug">{w}</p>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Stage tracker */}
           <div className="border border-gray-100 rounded-xl p-3 space-y-1">
@@ -127,11 +142,12 @@ export default function UploadPanel() {
               const active  = stageIdx === i;
               const pending = stageIdx < i;
               const stageTokens = stage.tokenKey ? (job.tokens?.[stage.tokenKey] ?? 0) : 0;
+              const hasOcrErrors = stage.keyword === "Stage 4" && job.vision_errors > 0 && done;
 
               return (
                 <div key={stage.label} className={`flex items-center gap-3 px-2 py-1.5 rounded-lg text-sm transition-colors ${active ? "bg-blue-50" : ""}`}>
                   {/* Icon */}
-                  <span className={`w-5 h-5 flex-shrink-0 flex items-center justify-center rounded-full text-xs font-bold ${done ? "bg-green-500 text-white" : active ? "bg-blue-500 text-white" : "bg-gray-100 text-gray-400"}`}>
+                  <span className={`w-5 h-5 flex-shrink-0 flex items-center justify-center rounded-full text-xs font-bold ${hasOcrErrors ? "bg-amber-400 text-white" : done ? "bg-green-500 text-white" : active ? "bg-blue-500 text-white" : "bg-gray-100 text-gray-400"}`}>
                     {done ? (
                       <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none">
                         <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
@@ -144,20 +160,18 @@ export default function UploadPanel() {
                   </span>
 
                   {/* Label */}
-                  <span className={`flex-1 ${done ? "text-green-700 line-through decoration-green-300" : active ? "text-blue-700 font-medium" : "text-gray-400"}`}>
+                  <span className={`flex-1 ${done ? (hasOcrErrors ? "text-amber-700 line-through decoration-amber-300" : "text-green-700 line-through decoration-green-300") : active ? "text-blue-700 font-medium" : "text-gray-400"}`}>
                     {stage.label}
                   </span>
 
-                  {/* Token count (only for LLM stages, only when tokens > 0) */}
-                  {done && stageTokens > 0 && (
+                  {/* Token count */}
+                  {(done || active) && stageTokens > 0 && (
                     <span className="text-xs text-purple-500 font-mono">{stageTokens.toLocaleString()} tok</span>
-                  )}
-                  {active && stageTokens > 0 && (
-                    <span className="text-xs text-purple-400 font-mono">{stageTokens.toLocaleString()} tok</span>
                   )}
 
                   {/* Status badge */}
-                  {done && <span className="text-xs text-green-500">done</span>}
+                  {done && !hasOcrErrors && <span className="text-xs text-green-500">done</span>}
+                  {done && hasOcrErrors && <span className="text-xs text-amber-500">{job.vision_errors} failed</span>}
                   {active && (
                     <span className="text-xs text-blue-500 flex items-center gap-1">
                       <span className="inline-block w-2.5 h-2.5 border border-blue-400 border-t-transparent rounded-full animate-spin" />
@@ -198,12 +212,27 @@ export default function UploadPanel() {
             ))}
           </div>
 
+          {/* Warnings summary on done screen */}
+          {job!.warnings?.length > 0 && (
+            <div className="space-y-1">
+              {job!.warnings.map((w, i) => (
+                <div key={i} className="flex gap-2 p-2.5 bg-amber-50 border border-amber-200 rounded-lg">
+                  <span className="text-amber-500 text-sm flex-shrink-0">⚠</span>
+                  <p className="text-xs text-amber-700 leading-snug">{w}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Download */}
           <div className="p-4 bg-green-50 rounded-xl flex items-center justify-between">
             <div>
               <p className="text-sm font-semibold text-green-800">Extraction complete</p>
               <p className="text-xs text-green-600 mt-0.5">
                 {job!.total_questions} questions · Excel ready
+                {job!.vision_errors > 0 && (
+                  <span className="text-amber-600 ml-1">· {job!.vision_errors} OCR failed (LLM fallback used)</span>
+                )}
               </p>
               {job!.total_tokens > 0 && (
                 <p className="text-xs text-purple-500 mt-0.5 font-mono">
